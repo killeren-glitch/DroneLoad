@@ -1,84 +1,43 @@
 from pymavlink import mavutil
 import time
 
-def pixhawk_port():
-    pass
 
+class DroneController:
+    def __init__(self, connection_string="/dev/ttyAMA0", baudrate=921600):
+        # Pour SITL, connection_string sera par ex "udp:127.0.0.1:14550"
+        print(f"Connexion au drone sur {connection_string}...")
+        self.master = mavutil.mavlink_connection(connection_string, baud=baudrate)
+        self.master.wait_heartbeat()
+        print("Cible connectée !")
 
-def init_mavlink():
-    print("Connexion au Pixhawk...")
+    def arm_and_takeoff(self, target_altitude):
+        print("Armement des moteurs...")
+        self.master.mav.command_long_send(
+            self.master.target_system, self.master.target_component,
+            mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0, 1, 0, 0, 0, 0, 0, 0)
 
-    master = mavutil.mavlink_connection('COM4', baud=57600)
+        self.master.motors_armed_wait()
+        print("Décollage...")
 
-    # attendre le heartbeat
-    master.wait_heartbeat()
+        self.master.mav.command_long_send(
+            self.master.target_system, self.master.target_component,
+            mavutil.mavlink.MAV_CMD_NAV_TAKEOFF_LOCAL, 0,
+            0, 0, 0, 0, 0, 0, target_altitude)
 
-    print("Heartbeat reçu")
-    print("System:", master.target_system)
-    print("Component:", master.target_component)
-
-    target_system = master.target_system
-    target_component = master.target_component
-
-    return master, target_system, target_component
-
-
-# -------------------------------
-# 2. Fonction pour envoyer position
-# -------------------------------
-
-def move(master, target_system, target_component, xyz: list, speed: tuple, accel: tuple):
-    """
-    Envoie une commande de déplacement relative.
-
-    x : avant/arrière (m)
-    y : gauche/droite (m)
-    z : haut/bas (m)
-
-    Frame BODY_OFFSET_NED :
-    x + = avance
-    y + = droite
-    y - = gauche
-    z + = descend
-    z - = monte
-    """
-
-    #1 c'est désactivé 0 c'est activé
-    type_mask = 0b110111111000  # ignore vitesse, accel, yaw
-
-    master.mav.set_position_target_local_ned_send(
-        int(time.time()*1000),
-        target_system,
-        target_component,
-        mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED,
-        type_mask,
-        *xyz,
-        *speed,   # vitesses
-        *accel,   # accélérations
-        0, 0       # yaw
-    )
-
-
-def drone_position(master, blocking=True, timeout=2):
-    """
-    Retourne la position locale du drone : (x, y, z)
-
-    x : avant/nord selon le repère utilisé
-    y : droite/est
-    z : bas (en NED, z négatif = altitude au-dessus du point d'origine)
-
-    master   : connexion pymavlink
-    blocking : attend un message si True
-    timeout  : temps max d'attente en secondes
-    """
-    msg = master.recv_match(
-        type='LOCAL_POSITION_NED',
-        blocking=blocking,
-        timeout=timeout
-    )
-
-    if msg is None:
-        return None
-
-    return (msg.x, msg.y, msg.z)
-
+    def send_velocity_body(self, vx, vy, vz, yaw_rate):
+        """
+        Envoie des vitesses au drone relatives à lui-même (avant, droite, bas).
+        vx: vitesse vers l'avant (m/s)
+        vy: vitesse vers la droite (m/s)
+        vz: vitesse vers le bas (m/s) - Négatif pour monter !
+        yaw_rate: rotation sur lui-même (rad/s)
+        """
+        # MAV_FRAME_BODY_NED : l'axe X est toujours l'avant du drone
+        self.master.mav.set_position_target_local_ned_send(
+            0, self.master.target_system, self.master.target_component,
+            mavutil.mavlink.MAV_FRAME_BODY_NED,
+            0b01111111000111,  # Masque pour ignorer la position, n'écouter que la vitesse et yaw_rate
+            0, 0, 0,  # Positions x, y, z ignorées
+            vx, vy, vz,  # Vitesses
+            0, 0, 0,  # Accélérations ignorées
+            0, yaw_rate)

@@ -1,77 +1,83 @@
-import cv2
 import time
-import sys
-from gstream import VideoGStreamer
-from flaskstream import VideoFStreamer
-from opencv import OpenCV
+import numpy as np
+import argparse
 
-Width=1280
-Height=720
-FPS_input=30
-Colors_input = False
-
-FPS_output=30
-Colors_output = True
-
-Stream = 'G'
-
-if input("Default : Def_in: {1}x{2}, FPS_in: {3}, Colors_in: {4} \n Stream: {5}, FPS_out: {6}, Colors_out: {7} \n (y/n): ")=='n':
-    Width = input("Width: ")
-    Height = input("Height: ")
-    FPS_input = input("FPS_in: ")
-    Colors_input = input("Colors_in (y/n): ")=='y'
-
-    FPS_output = input("FPS_output: ")
-    Colors_output = input("Colors_output (y/n) : ")=='y'
-
-    Stream = input("Stream (G for gstreamer / F for flask / N for none): ")
+from mavlink import DroneController
+from gstream import VideoManager
+from sensors import HardwareManager
+from epreuve1 import run_epreuve1
+from epreuve2 import run_epreuve2
+from mqtt_server import MqttManager
+from opencv import ArucoProcessor
+from yolo import YoloProcessor
 
 
-if Stream=="F" or Stream=="f":
-    streamer = VideoFStreamer(width=Width, height=Height, fps_input=FPS_input, colors_input=Colors_input,stream=Stream, fps_output=FPS_output, colors_output=Colors_output)
-else:
-    streamer = VideoGStreamer(width=Width, height=Height, fps_input=FPS_input, colors_input=Colors_input,stream=Stream, fps_output=FPS_output, colors_output=Colors_output)
+def parse_arguments():
+    parser = argparse.ArgumentParser(description='Raspberry Pi')
+    parser.add_argument('--sim', action='store_true', help='Mode Simulation (SITL/Docker)')
+    return parser.parse_args()
 
-print("Traitement démarré... ctrl+C pour stopper")
 
-prev_time = time.time()
-frame_count = 0
-fps=0
+def main():
+    args = parse_arguments()
 
-cv = OpenCV() #Added
+    # Choix automatique de la connexion selon l'argument du terminal
+    if args.sim:
+        print("--- DÉMARRAGE EN MODE SIMULATION (SITL) ---")
+        mavlink_port = "udp:127.0.0.1:14550"
+    else:
+        print("--- DÉMARRAGE EN MODE RASPBERRY PI ---")
+        mavlink_port = "/dev/ttyAMA0"
 
-try:
+    # 1. Initialisation Hardware & Réseau
+    hw = HardwareManager()
+    drone = DroneController(connection_string=mavlink_port)
+    # On passe 'drone' à MqttManager pour qu'il puisse armer/désarmer
+    mqtt = MqttManager(hw, drone)
+    mqtt.start(broker_ip="127.0.0.1")
+
+    drone = DroneController(connection_string=mavlink_port)
+    video = VideoManager(ip_dest="192.168.88.25", width=640, height=480)
+
+    # 2. Initialisation Vision
+    aruco_vision = ArucoProcessor()
+    yolo_vision = YoloProcessor()
+
+    print("Système prêt. En attente de commandes...")
+
+    # 3. Boucle Principale
     while True:
-        ret, frame = streamer.read()
-        if not ret:
-            break
+        # A. Acquisition de l'image réelle
+        frame = video.get_frame()
+        if frame is None:
+            time.sleep(0.01)
+            continue
 
-        #frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)        #conversion niveaux de gris
-        frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+        # Création du calque de dessin (Normal = copie de l'image, Noir = image vide)
+        if mqtt.black_bg:
+            canvas = np.zeros_like(frame)
+        else:
+            canvas = frame.copy()
 
-        # --- TRAITEMENT OPENCV ---
-        cv.Aruco(frame, fps) #added
-        """
-        cv2.putText(frame, f"Pi4 - Detection Active - FPS {fps}",
-                    (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        # B. Traitement visuel (analyse sur 'frame', dessine sur 'canvas')
+        canvas, arucos_data = aruco_vision.process(frame, canvas)
+        canvas, yolo_data = yolo_vision.process(frame, canvas)
 
-        # --- FIN DU TRAITEMENT OPENCV ---
-        """
-        # Streaming
-        if Stream!="N" or "n":
-            streamer.send(frame)
+        # C. Logique de vol
+        if mqtt.current_mode == "epreuve1":
+            run_epreuve1(drone, hw, arucos_data, video.width)
 
-            frame_count += 1
-            current_time = time.time()
-            if current_time - prev_time >= 1.0:
-                print(f"FPS Réels : {frame_count}")
-                fps = frame_count
-                frame_count = 0
-                prev_time = current_time
+        elif mqtt.current_mode == "epreuve2":
+            # On passe les données de YOLO
+            run_epreuve2(drone, hw, yolo_data, video.width)
 
-except KeyboardInterrupt:
-    print("\nArrêt du programme...")
-    sys.exit(1)
+        elif mqtt.current_mode == "attente":
+            drone.send_velocity_body(0, 0, 0, 0)
 
-finally:
-    streamer.release()
+        # D. Envoi de l'image dessinée au PC via GStreamer
+        video.send_frame(canvas)
+        mqtt.update_telemetry()  # Calcule les FPS et envoie les données
+
+
+if __name__ == "__main__":
+    main()
