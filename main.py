@@ -2,7 +2,7 @@ import time
 import numpy as np
 import argparse
 
-from mavlink import DroneController
+from mavlink import DroneController, DummyDroneController
 from gstream import VideoManager
 from sensors import HardwareManager
 # from epreuve1 import run_epreuve1
@@ -16,6 +16,7 @@ from yolo import YoloProcessor
 def parse_arguments():
     parser = argparse.ArgumentParser(description='Raspberry Pi')
     parser.add_argument('--sim', action='store_true', help='Mode Simulation (SITL/Docker)')
+    parser.add_argument('--no-pixhawk', action='store_true', help='Test de la vision sans connexion MAVLink')
     return parser.parse_args()
 
 
@@ -23,21 +24,24 @@ def main():
     args = parse_arguments()
 
     # Choix automatique de la connexion selon l'argument du terminal
-    if args.sim:
+    if args.no_pixhawk:
+        print("--- DÉMARRAGE EN MODE VISION UNIQUEMENT ---")
+        drone = DummyDroneController()
+    elif args.sim:
         print("--- DÉMARRAGE EN MODE SIMULATION (SITL) ---")
-        mavlink_port = "udp:127.0.0.1:14550"
+        drone = DroneController(connection_string="udp:127.0.0.1:14550")
     else:
-        print("--- DÉMARRAGE EN MODE RASPBERRY PI ---")
-        mavlink_port = "/dev/ttyAMA0"
+        print("--- DÉMARRAGE EN MODE RASPBERRY PI RÉEL ---")
+        drone = DroneController(connection_string="/dev/ttyAMA0")
 
     # 1. Initialisation Hardware & Réseau
     hw = HardwareManager()
-    drone = DroneController(connection_string=mavlink_port, baudrate=921600)
+    #drone = DroneController(connection_string=mavlink_port, baudrate=921600)
     # On passe 'drone' à MqttManager pour qu'il puisse armer/désarmer
     mqtt = MqttManager(hw, drone)
     mqtt.start(broker_ip="127.0.0.1")
 
-    drone = DroneController(connection_string=mavlink_port)
+   # drone = DroneController(connection_string=mavlink_port)
     video = VideoManager(ip_dest="192.168.31.139", width=640, height=480)
 
     # 2. Initialisation Vision
@@ -45,7 +49,7 @@ def main():
     yolo_vision = YoloProcessor()
     epreuve1_task = Epreuve1Task()
 
-    print("Système prêt. En attente de commandes...")
+    mqtt.log_to_pc("Système prêt. En attente de commandes...")
 
     # 3. Boucle Principale
     while True:

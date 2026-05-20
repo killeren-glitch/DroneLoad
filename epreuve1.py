@@ -55,6 +55,7 @@ class Epreuve1Task:
         if self.state == "TAKEOFF":
             if not self.takeoff_done:
                 print(f"Décollage à {ALTITUDE_CIBLE}m...")
+                #drone.arm_and_takeoff(ALTITUDE_CIBLE)
                 drone.arm_and_takeoff(ALTITUDE_CIBLE)
                 self.takeoff_done = True
                 self.state = "SEARCH"

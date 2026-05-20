@@ -1,81 +1,148 @@
 import paho.mqtt.client as mqtt
 import json
-import threading
 import time
+import os
+import sys
 
-# --- CONFIGURATION ---
-# L'IP de ta box hAP lite ou de ton Raspberry Pi 5
-BROKER_IP = "192.168.2.3"
+BROKER_IP = "192.168.31.113"
 
+# Variables globales
+telemetry_data = {
+    "mode": "attente", "esp_connected": False, "fps": 0, 
+    "cpu_percent": 0, "ram_percent": 0, "flight_time_sec": 0, 
+    "batt_v": -1, "batt_pct": -1
+}
+logs_buffer = []
+black_bg_state = False
+is_first_connect = True  
 
-# --- RÉCEPTION MQTT ---
+def print_at(line, col, text):
+    """ 
+    CORRECTION MAC : Utilisation de \0337 (Save) et \0338 (Restore) au lieu de [s et [u.
+    Cela fige le curseur de saisie de l'utilisateur sans jamais perturber l'input.
+    """
+    print(f"\0337\033[{line};{col}H{text}\033[K\0338", end="", flush=True)
+
+def init_static_interface():
+    """ Dessine la structure fixe de l'interface au tout début """
+    os.system('clear')
+    print("=======================================================================")
+    print("                       PANNEAU DE CONTRÔLE DRONE                       ")
+    print("=======================================================================")
+    print(" [1] Mode ATTENTE      [2] Mode EPREUVE 1      [3] Mode EPREUVE 2")
+    print(" [B] Toggle Fond Noir  [S] Restart Script      [R] Reboot Raspberry Pi")
+    print(" [O] Éteindre le Pi    [Q] Quitter le Dashboard")
+    print("=======================================================================")
+    print(" MODE: ATTENTE    | ESP32: DISCNN | IA: 0  FPS") # Ligne 8
+    print(" CPU: 0% | RAM: 0% | Chrono: 0s | Batterie: N/C") # Ligne 9
+    print("==========================================[ DERNIERS LOGS DRONE ]======") # Ligne 10
+    print(" -> En attente de logs...") # Ligne 11
+    print("") # Ligne 12
+    print("") # Ligne 13
+    print("") # Ligne 14
+    print("") # Ligne 15
+    print("") # Ligne 16
+    print("=======================================================================") # Ligne 17
+    print("> ", end="", flush=True) # Ligne 18
+
+def update_telemetry_ui():
+    """ Met à jour uniquement les lignes 8 et 9 (Télémétrie) """
+    esp_status = "OK" if telemetry_data["esp_connected"] else "DISCNN"
+    batt_str = f"{telemetry_data['batt_v']}V ({telemetry_data['batt_pct']}/%)" if telemetry_data['batt_v'] != -1 else "N/C"
+    
+    line8 = f" MODE: {telemetry_data['mode'].upper():<10} | ESP32: {esp_status:<6} | IA: {telemetry_data['fps']:<2} FPS"
+    line9 = f" CPU: {telemetry_data['cpu_percent']}% | RAM: {telemetry_data['ram_percent']}% | Chrono: {telemetry_data['flight_time_sec']}s | Batterie: {batt_str}"
+    
+    print_at(8, 2, line8)
+    print_at(9, 2, line9)
+
+def update_logs_ui():
+    """ Met à jour uniquement la zone des logs (Lignes 11 à 16) """
+    current_logs = logs_buffer[-6:]
+    for i, log in enumerate(current_logs):
+        print_at(11 + i, 5, f"{log:<62}")
+
+def log_local(message):        
+    timestamp = time.strftime("%H:%M:%S")
+    logs_buffer.append(f"[{timestamp}] {message}")
+    update_logs_ui()
+
+# --- CONFIGURATION MQTT ---
 def on_connect(client, userdata, flags, reason_code, properties):
-    print(f"\n[+] Connecté au drone sur {BROKER_IP}")
+    global is_first_connect
+    if is_first_connect:
+        init_static_interface()
+        log_local(f"Connecté au Broker MQTT ({BROKER_IP})")
+        is_first_connect = False
+        
     client.subscribe("drone/logs")
     client.subscribe("drone/telemetry")
 
 def on_message(client, userdata, msg):
+    global telemetry_data
     topic = msg.topic
     payload = msg.payload.decode("utf-8")
-
+    
     if topic == "drone/logs":
-        print(f"\n[DRONE LOG] {payload}")
-
+        log_local(payload)
+        
     elif topic == "drone/telemetry":
-        data = json.loads(payload)
-        # On utilise le retour chariot (\r) pour rafraîchir la ligne sans scroller à l'infini
-        info = (f"\r[TÉLÉMÉTRIE] "
-                f"Mode: {data['mode']:<10} | "
-                f"FPS: {data['fps']:<3} | "
-                f"CPU: {data['cpu_percent']:<4}% | "
-                f"RAM: {data['ram_percent']:<4}% | "
-                f"Vol: {data['flight_time_sec']}s | "
-                f"Batt: {data['batt_v']}V ({data['batt_pct']}%)")
-        print(info, end="", flush=True)
+        try:
+            telemetry_data = json.loads(payload)
+            update_telemetry_ui()
+        except Exception:
+            pass
 
-
-# --- THREAD D'ÉCOUTE ---
+# Connexion initiale
 client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, "PC_Dashboard")
 client.on_connect = on_connect
 client.on_message = on_message
 client.connect(BROKER_IP, 1883, 60)
 client.loop_start()
 
-# --- INTERFACE COMMANDES (Menu CLI) ---
-time.sleep(1)  # Attendre la connexion
-print("\n--- TABLEAU DE BORD DRONE ---")
-print("Commandes Vol : [1] Mode Attente  [2] Mode Epreuve1  [3] Mode Epreuve2")
-print("Commandes Sys : [A] Armer  [D] Désarmer")
-print("Commandes Pi  : [R] Reboot Pi  [S] Restart Script")
-print("Commandes Vid : [B] Toggle Black/Normal Background")
-print("Quitter       : [Q]")
+time.sleep(0.2)
 
-black_bg_state = False
-
+# --- BOUCLE PRINCIPALE DES COMMANDES ---
 while True:
-    cmd = input("\n> ").strip().upper()
-
+    try:
+        # CORRECTION : On supprime le repositionnement de force qui cassait la frappe en boucle
+        cmd = input().strip().upper()
+    except (KeyboardInterrupt, EOFError):
+        break
+    
+    # Nettoie la ligne de saisie de l'écran après chaque validation
+    print("\033[18;3H\033[K", end="", flush=True)
+    
     if cmd == '1':
         client.publish("drone/cmd", json.dumps({"action": "set_mode", "mode": "attente"}))
     elif cmd == '2':
         client.publish("drone/cmd", json.dumps({"action": "set_mode", "mode": "epreuve1"}))
     elif cmd == '3':
         client.publish("drone/cmd", json.dumps({"action": "set_mode", "mode": "epreuve2"}))
-    elif cmd == 'A':
-        client.publish("drone/cmd", json.dumps({"action": "arm"}))
-    elif cmd == 'D':
-        client.publish("drone/cmd", json.dumps({"action": "disarm"}))
     elif cmd == 'B':
         black_bg_state = not black_bg_state
         client.publish("drone/cmd", json.dumps({"action": "video_bg", "black": black_bg_state}))
+        log_local(f"Commande Fond Noir : {black_bg_state}")
     elif cmd == 'S':
-        print("Envoi commande RESTART SCRIPT...")
         client.publish("drone/system", json.dumps({"action": "restart_script"}))
+        log_local("Demande de redémarrage du script Pi 5...")
     elif cmd == 'R':
-        confirm = input("T'es sûr de vouloir REBOOT LE PI 5 (O/N) ? ").upper()
-        if confirm == 'O':
+        # On place le curseur ligne 18, on efface la ligne, et on pose la question
+        print("\033[18;1H\033[K> Confirmer REBOOT du Pi (O/N) ? ", end="", flush=True)
+        if input().strip().upper() == 'O':
             client.publish("drone/system", json.dumps({"action": "reboot"}))
+        # On remet le curseur classique si on annule
+        print("\033[18;1H\033[K> ", end="", flush=True) 
+        
+    elif cmd == 'O':
+        print("\033[18;1H\033[K> !!! CONFIRMER EXTINCTION PI 5 (O/N) ? ", end="", flush=True)
+        if input().strip().upper() == 'O':
+            client.publish("drone/system", json.dumps({"action": "shutdown"}))
+            time.sleep(1)
+            break
+        print("\033[18;1H\033[K> ", end="", flush=True)
     elif cmd == 'Q':
-        print("Fermeture du Dashboard.")
-        client.loop_stop()
         break
+
+client.loop_stop()
+print("\033[19;1H\nDashboard fermé.\n")
