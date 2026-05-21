@@ -5,7 +5,7 @@ import time
 
 # --- CONFIGURATION ---
 # L'IP de ta box hAP lite ou de ton Raspberry Pi 5
-BROKER_IP = "192.168.88.25"
+BROKER_IP = "192.168.2.3"
 
 
 # --- RÉCEPTION MQTT ---

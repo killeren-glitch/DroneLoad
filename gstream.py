@@ -2,23 +2,27 @@ import cv2
 import numpy as np
 import threading
 import time
+import sys
 
 
 class VideoManager:
-    def __init__(self, ip_dest="192.168.88.25", port=5000, width=640, height=480):
+    def __init__(self, ip_dest="192.168.31.139", port=5000, width=640, height=480):
         self.width = width
         self.height = height
 
         # --- 1. ENTRÉE VIDÉO ---
         pipeline_in = (
             f"libcamerasrc ! "
-            f"video/x-raw, width={width}, height={height}, framerate=15/1 ! "
-            f"videoconvert ! video/x-raw, format=BGR ! appsink drop=true max-buffers=1"
+            f"video/x-raw,format=NV12,width={width},height={height},framerate=15/1 ! "
+            f"videoconvert ! video/x-raw,format=BGR ! appsink drop=true max-buffers=1"
         )
+
+        print("Initialisation de la caméra...")
         self.cap = cv2.VideoCapture(pipeline_in, cv2.CAP_GSTREAMER)
 
         if not self.cap.isOpened():
             print("ERREUR : Impossible d'ouvrir la caméra via GStreamer.")
+            sys.exit(1)
 
         # --- 2. GESTION DU THREAD (Buffer de taille 1) ---
         self.current_frame = None
@@ -32,8 +36,16 @@ class VideoManager:
 
         # On attend qu'une première image arrive pour être sûr que la caméra est chaude
         print("Attente de la première image caméra...")
+        timeout = time.time() + 5.0 # Timeout de 5 secondes max
+        
         while self.current_frame is None and self.running:
             time.sleep(0.1)
+            if time.time() > timeout:
+                print("ERREUR FATALE : La caméra est ouverte mais n'envoie aucune image.")
+                sys.exit(1)
+
+        print("Caméra OK ! Lancement du flux réseau...")
+
 
         # --- 3. SORTIE VIDÉO ---
         pipeline_out = (

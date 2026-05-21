@@ -5,7 +5,8 @@ import argparse
 from mavlink import DroneController
 from gstream import VideoManager
 from sensors import HardwareManager
-from epreuve1 import run_epreuve1
+# from epreuve1 import run_epreuve1
+from epreuve1 import Epreuve1Task
 from epreuve2 import run_epreuve2
 from mqtt_server import MqttManager
 from opencv import ArucoProcessor
@@ -31,17 +32,18 @@ def main():
 
     # 1. Initialisation Hardware & Réseau
     hw = HardwareManager()
-    drone = DroneController(connection_string=mavlink_port)
+    drone = DroneController(connection_string=mavlink_port, baudrate=921600)
     # On passe 'drone' à MqttManager pour qu'il puisse armer/désarmer
     mqtt = MqttManager(hw, drone)
     mqtt.start(broker_ip="127.0.0.1")
 
     drone = DroneController(connection_string=mavlink_port)
-    video = VideoManager(ip_dest="192.168.88.25", width=640, height=480)
+    video = VideoManager(ip_dest="192.168.31.139", width=640, height=480)
 
     # 2. Initialisation Vision
     aruco_vision = ArucoProcessor()
     yolo_vision = YoloProcessor()
+    epreuve1_task = Epreuve1Task()
 
     print("Système prêt. En attente de commandes...")
 
@@ -65,13 +67,16 @@ def main():
 
         # C. Logique de vol
         if mqtt.current_mode == "epreuve1":
-            run_epreuve1(drone, hw, arucos_data, video.width)
+            #run_epreuve1(drone, hw, arucos_data, video.width)
+            epreuve1_task.run(drone, hw, arucos_data, video.width, video.height)
 
         elif mqtt.current_mode == "epreuve2":
             # On passe les données de YOLO
             run_epreuve2(drone, hw, yolo_data, video.width)
 
         elif mqtt.current_mode == "attente":
+            epreuve1_task.state = "TAKEOFF"
+            epreuve1_task.takeoff_done = False
             drone.send_velocity_body(0, 0, 0, 0)
 
         # D. Envoi de l'image dessinée au PC via GStreamer

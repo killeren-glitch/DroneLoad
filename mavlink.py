@@ -41,3 +41,10 @@ class DroneController:
             vx, vy, vz,  # Vitesses
             0, 0, 0,  # Accélérations ignorées
             0, yaw_rate)
+    
+    def land(self):
+        print("Atterrissage commandé !")
+        self.master.mav.command_long_send(
+            self.master.target_system, self.master.target_component,
+            mavutil.mavlink.MAV_CMD_NAV_LAND, 0,
+            0, 0, 0, 0, 0, 0, 0)
