@@ -1,4 +1,5 @@
 import time
+import math
 """
 def run_epreuve1(drone, hw, arucos_data, frame_width):
 
@@ -47,6 +48,10 @@ class Epreuve1Task:
         self.takeoff_done = False
 
         self.last_time = time.time()
+
+        self.sum_err_y = 0.0 # Pour le centrage latéral (Axe Y du drone, Axe X de l'image)
+        self.sum_err_dist = 0.0
+
         self.sum_err_x = 0.0
         self.sum_err_y = 0.0
 
@@ -79,9 +84,56 @@ class Epreuve1Task:
             # ... (À implémenter compléter !!!!!!!!!!!!!!!!!!!!!!!!!)
             pass
 
+    def compensate_camera_forward(self, raw_x, raw_y, width, height, roll_rad, pitch_rad):
+        """
+        Corrige la position (x, y) pour une caméra regardant vers l'AVANT.
+        """
+        cx_img = width / 2
+        cy_img = height / 2
+
+        # 1. Compensation du PITCH (Le nez se baisse -> L'image monte)
+        px_per_rad_y = height / math.radians(self.FOV_Y_DEG)
+        # Si pitch > 0 (nez en bas), l'ArUco semble plus haut (Y plus petit)
+        # On ajoute l'offset pour redescendre virtuellement l'ArUco à sa vraie place
+        offset_y = pitch_rad * px_per_rad_y
+        y_pitch_corrected = raw_y + offset_y
+
+        # 2. Compensation du ROLL (Le drone penche -> L'image tourne)
+        # On fait une rotation 2D autour du centre de l'image
+        dx = raw_x - cx_img
+        dy = y_pitch_corrected - cy_img
+        
+        # Matrice de rotation (On inverse l'angle de Roll)
+        cos_r = math.cos(-roll_rad)
+        sin_r = math.sin(-roll_rad)
+        
+        dx_rot = dx * cos_r - dy * sin_r
+        dy_rot = dx * sin_r + dy * cos_r
+        
+        corrected_x = cx_img + dx_rot
+        corrected_y = cy_img + dy_rot
+
+        return corrected_x, corrected_y
+
+    def estimate_distance(self, pixel_width, image_width):
+        """
+        Calcule la distance en mètres grâce au théorème de Thalès.
+        """
+        REAL_ARUCO_WIDTH_M = 0.20 # 20 cm
+        
+        # Calcul de la focale en pixels
+        focal_length_px = (image_width / 2) / math.tan(math.radians(self.FOV_X_DEG) / 2)
+        
+        # D = (Taille réelle * Focale) / Taille en pixels
+        if pixel_width > 0:
+            distance_m = (REAL_ARUCO_WIDTH_M * focal_length_px) / pixel_width
+            return distance_m
+        return 999.0 # Sécurité si pas de largeur
+
     def run(self, drone, hw, arucos_data, frame_width, frame_height):
         TARGET_ID = 0
-        ALTITUDE_CIBLE = 0.25 # 50 cm
+        ALTITUDE_CIBLE = 0.50 # 50 cm
+        TARGET_DISTANCE = 0.30 # Arrêt à 30 cm
 
         now = time.time()
         dt = now - self.last_time
@@ -134,60 +186,65 @@ class Epreuve1Task:
         # ---------------------------------------------------------
         # ETAT 3 : CENTRAGE
         # ---------------------------------------------------------
-        elif self.state == "CENTER":
+        elif self.state == "APPROACH":
             if TARGET_ID in arucos_data:
-                raw_center_x, raw_center_y = arucos_data[TARGET_ID]
+                # Récupération des données (On suppose que tu as ajouté la largeur)
+                raw_x, raw_y, pixel_width = arucos_data[TARGET_ID]
                 
-                # --- COMPENSATION MAGIQUE ICI ---
-                # On corrige la position lue par la caméra avec les angles inertiels
-                cam_x, cam_y = self.compensate_camera_angles(
-                    raw_center_x, raw_center_y, 
-                    frame_width, frame_height, 
-                    drone.roll, drone.pitch, 
-                    cam_is_down=True
+                # 1. Calcul de la Distance
+                current_distance = self.estimate_distance(pixel_width, frame_width)
+                
+                # 2. Compensation des mouvements de la caméra
+                cam_x, cam_y = self.compensate_camera_forward(
+                    raw_x, raw_y, frame_width, frame_height, 
+                    drone.roll, drone.pitch
                 )
                 
-                # Le reste du code PI utilise maintenant l'erreur CORRIGÉE
-                err_x_img = cam_x - (frame_width / 2)
-                err_y_img = cam_y - (frame_height / 2)
+                # 3. Calcul des Erreurs
+                err_x_img = cam_x - (frame_width / 2) # Pour le strafe Gauche/Droite
+                err_dist = current_distance - TARGET_DISTANCE # Pour l'avance (Positif = trop loin)
                 
-                self.sum_err_x += err_x_img * dt
-                self.sum_err_y += err_y_img * dt
-                max_integral = 1000
-                self.sum_err_x = max(min(self.sum_err_x, max_integral), -max_integral)
-                self.sum_err_y = max(min(self.sum_err_y, max_integral), -max_integral)
-
-                Kp = 0.002
-                Ki = 0.0005 
+                # 4. Intégration (PI) avec Anti-Windup
+                self.sum_err_y += err_x_img * dt
+                self.sum_err_dist += err_dist * dt
+                self.sum_err_y = max(min(self.sum_err_y, 500), -500)
+                self.sum_err_dist = max(min(self.sum_err_dist, 10), -10)
                 
-                cmd_x = (err_x_img * Kp) + (self.sum_err_x * Ki)
-                cmd_y = (err_y_img * Kp) + (self.sum_err_y * Ki)
+                # 5. Gains PI (À régler en vol)
+                # Gain pour le centrage latéral (pixels vers m/s)
+                Kp_lat = 0.0015
+                Ki_lat = 0.0002
                 
-                vx = -cmd_y 
-                vy = cmd_x  
+                # Gain pour la distance (mètres vers m/s)
+                Kp_dist = 0.6
+                Ki_dist = 0.1
                 
-                vx = max(min(vx, 0.2), -0.2)
+                # 6. Calcul des vitesses
+                # L'axe Y du drone (gauche/droite) corrige l'erreur X de l'image
+                vy = (err_x_img * Kp_lat) + (self.sum_err_y * Ki_lat)
+                
+                # L'axe X du drone (avant/arrière) corrige l'erreur de distance
+                vx = (err_dist * Kp_dist) + (self.sum_err_dist * Ki_dist)
+                
+                # Saturation de sécurité (Max 0.3 m/s en approche)
+                vx = max(min(vx, 0.3), -0.3)
                 vy = max(min(vy, 0.2), -0.2)
                 
-                # Pour valider le centrage, on regarde l'erreur stabilisée
-                if abs(err_x_img) < 30 and abs(err_y_img) < 30:
-                    print("Cible verrouillée au centre. Atterrissage !")
+                print(f"Dist: {current_distance:.2f}m (Err: {err_dist:.2f}m) | Vx: {vx:.2f} Vy: {vy:.2f}")
+                
+                # 7. Condition d'atterrissage : On est à 30cm (± 5cm) et centré
+                if abs(err_dist) < 0.05 and abs(err_x_img) < 40:
+                    print("Cible atteinte et verrouillée ! Atterrissage...")
                     drone.send_velocity_body(0, 0, 0, 0)
+                    time.sleep(0.5) # Temps de stabilisation
                     drone.land()
                     self.state = "LANDED"
                 else:
+                    # Envoi des vitesses (vz=0 pour garder l'altitude Lidar gérée par l'EKF)
                     drone.send_velocity_body(vx, vy, 0, 0)
             else:
-                # Si on perd l'ArUco de vue, on s'arrête et on repasse en recherche
-                print("ArUco perdu ! Arrêt et reprise de la recherche.")
-                self.sum_err_x = 0
+                print("Cible perdue ! Stationnaire.")
                 self.sum_err_y = 0
+                self.sum_err_dist = 0
                 drone.send_velocity_body(0, 0, 0, 0)
                 self.state = "SEARCH"
-                
-        # ---------------------------------------------------------
-        # ETAT 4 : POSÉ
-        # ---------------------------------------------------------
-        elif self.state == "LANDED":
-            # Ne fait plus rien
-            pass

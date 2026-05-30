@@ -1,5 +1,6 @@
 import cv2
 import cv2.aruco as aruco
+import math
 
 
 class ArucoProcessor:
@@ -26,7 +27,10 @@ class ArucoProcessor:
                 c = corners[i][0]
                 center_x = int((c[0][0] + c[2][0]) / 2)
                 center_y = int((c[0][1] + c[2][1]) / 2)
-                detected_arucos[aruco_id] = (center_x, center_y)
+
+                pixel_width = math.hypot(c[1][0] - c[0][0], c[1][1] - c[0][1])
+                
+                detected_arucos[aruco_id] = (center_x, center_y, pixel_width)
 
                 # Centre en rouge
                 cv2.circle(canvas, (center_x, center_y), 5, (0, 0, 255), -1)
