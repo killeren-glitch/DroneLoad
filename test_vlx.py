@@ -1,3 +1,21 @@
+from sensors import VL53L5CXReader
+
+if __name__ == "__main__":
+    reader = VL53L5CXReader()
+
+    try:
+        while True:
+            distance = reader.get_distance()  # non bloquant
+
+            if distance is not None:
+                print(f"Distance : {distance:.0f} mm  ({distance/1000:.2f} m)")
+            else:
+                print("En attente de la première mesure...")
+
+    except KeyboardInterrupt:
+        reader.stop()
+        print("Arrêt propre")
+
 """
 import time
 import numpy
@@ -34,13 +52,12 @@ while True:
         print(motion, distance, reflectance, status)
     time.sleep(0.1)
 """
-
+"""
 import time
 import math
 from pymavlink import mavutil
 
 def request_message_interval(master, message_id, frequency_hz):
-    """ Demande l'envoi d'un message spécifique à une fréquence donnée """
     interval_us = int(1000000 / frequency_hz)
     master.mav.command_long_send(
         master.target_system, master.target_component,
@@ -100,3 +117,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+"""
