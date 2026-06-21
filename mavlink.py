@@ -1,5 +1,6 @@
 from pymavlink import mavutil
 import time
+import math
 
 
 class DroneController:
@@ -9,215 +10,187 @@ class DroneController:
         self.master = mavutil.mavlink_connection(connection_string, baud=baudrate)
         self.master.wait_heartbeat()
         print("Cible connectée !")
-        self._last_lidar_alt = 0.0
-    
-    def request_message_interval(self, message_id, frequency_hz):
-        interval_us = int(1000000 / frequency_hz)
-        self.master.mav.command_long_send(
-            self.master.target_system, self.master.target_component,
-            mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL, 0,
-            message_id, interval_us, 0, 0, 0, 0, 0
-        )
 
-    def update_attitude(self):
-        """ Appeler cette fonction souvent (ex: dans un thread ou une boucle) 
-            pour garder les angles à jour """
-        msg = self.master.recv_match(type='ATTITUDE', blocking=False)
-        if msg:
-            self.roll = msg.roll   # en radians
-            self.pitch = msg.pitch # en radians
-            self.yaw = msg.yaw     # en radians
-    
-    def set_mode_safe(self, mode_id, mode_name, timeout=3.0):
-        """
-        Demande un changement de mode et écoute les Heartbeats 
-        pour vérifier que le Pixhawk a bien accepté.
-        """
-        print(f"Demande de passage en mode {mode_name} (ID: {mode_id})...")
+    def set_ekf_origin(self):
+        """ Injecte une fausse position globale pour débloquer le mode GUIDED sans GPS """
+        print("Initialisation de l'origine EKF (Faux GPS)...")
+        # Coordonnées arbitraires (Exemple: Paris)
+        lat = int(48.8566 * 1e7)
+        lon = int(2.3522 * 1e7)
+        
+        # CORRECTION 1 : Ne jamais mettre 0. (Unité = millimètres)
+        alt = 1000 # 1 mètre
+        
+        # Message 48 : SET_GPS_GLOBAL_ORIGIN
+        self.master.mav.set_gps_global_origin_send(
+            self.master.target_system,
+            lat, lon, alt
+        )
+        
+        # Message 411 : SET_HOME_POSITION
+        self.master.mav.set_home_position_send(
+            self.master.target_system,
+            lat, lon, alt,
+            0, 0, 0, 
+            [1.0, 0.0, 0.0, 0.0], # Quaternion formaté proprement en floats
+            0, 0, 0
+        )
+        
+        # On laisse à l'EKF3 le temps de traiter l'information et de passer au vert
+        time.sleep(1.0)
+
+    def arm_and_takeoff(self, target_altitude):
+        # 1. Injection de la fausse origine
+        self.set_ekf_origin()
+        
+        # 2. Mode GUIDED
+        print("Passage en mode GUIDED...")
         self.master.mav.set_mode_send(
             self.master.target_system,
             mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
-            mode_id)
-            
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-            # On attrape le prochain Heartbeat (envoyé à 1Hz par défaut)
-            msg = self.master.recv_match(type='HEARTBEAT', blocking=True, timeout=0.5)
-            if msg:
-                if msg.custom_mode == mode_id:
-                    print(f"[OK] Mode {mode_name} validé et actif !")
-                    return True
-                    
-        print(f"[ERREUR] Timeout : Le Pixhawk a refusé ou ignoré le mode {mode_name}.")
-        return False
-
-    def set_ekf_origin(self):
-        """ Injecte un repère spatial pour autoriser le mode GUIDED en intérieur """
-        print("Initialisation de l'origine EKF (Faux GPS)...")
-        # On injecte une coordonnée fictive et 1 mètre d'altitude (1000 mm)
-        self.master.mav.set_gps_global_origin_send(
-            self.master.target_system,
-            int(48.8566 * 1e7), int(2.3522 * 1e7), 1000
-        )
-        time.sleep(1.0)
-
-    def arm_and_takeoff_hybrid(self, target_altitude=0.5):
-        """ 
-        Décollage forcé au Thrust (GUIDED_NOGPS) puis bascule en Vitesse (GUIDED)
-        """
-        # 1. Forcer le flux du Lidar brut (173 = RANGEFINDER, 132 = DISTANCE_SENSOR)
-        print("Demande du flux Lidar brut...")
-        self.request_message_interval(173, 20)
-        self.request_message_interval(132, 20)
+            4)
         time.sleep(0.5)
-
-        # 2. Passage en GUIDED_NOGPS pour ignorer les sécurités EKF au sol
-        print("Passage en mode GUIDED_NOGPS (Mode 20)...")
-        if not self.set_mode_safe(20, "GUIDED_NOGPS"):
-            print("Décollage annulé.")
-            return
 
         # 3. Armement
         print("Armement des moteurs...")
-        self.master.arducopter_arm()
+        self.master.mav.command_long_send(
+            self.master.target_system, self.master.target_component,
+            mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0, 1, 0, 0, 0, 0, 0, 0)
+
         self.master.motors_armed_wait()
-        print("Moteurs Armés !")
+        print("Moteurs armés ! Lancement de la commande TAKEOFF...")
 
-        print(f"Décollage au Thrust vers {target_altitude}m...")
-        
-        while True:
-            # Envoi d'une poussée constante (ajuste entre 0.55 et 0.65 selon le poids)
-            thrust_value = 0.53 
-            self.master.mav.set_attitude_target_send(
-                0, self.master.target_system, self.master.target_component,
-                0b00000111, [1, 0, 0, 0], 0, 0, 0, thrust_value
-            )
-
-            # Lecture exclusive du Lidar Brut
-            msg = self.master.recv_match(type=['RANGEFINDER', 'DISTANCE_SENSOR'], blocking=True, timeout=0.1)
-            current_alt = 0.0
-            
-            if msg:
-                if msg.get_type() == 'RANGEFINDER':
-                    current_alt = msg.distance
-                elif msg.get_type() == 'DISTANCE_SENSOR':
-                    current_alt = msg.current_distance / 100.0
-            
-            # Affichage de validation
-            print(f"Altitude Lidar Brut : {current_alt:.2f} m")
-            
-            # Dès que la cible est atteinte, on coupe la boucle
-            if current_alt >= target_altitude:
-                print(f"Altitude atteinte ({current_alt:.2f}m) !")
-                break 
-                
-            time.sleep(0.05)
-
-        # 4. BASCULE EN MODE GUIDED POUR L'IA
-        print("Repassage en mode GUIDED (Mode 4) pour le pilotage en VITESSE...")
-        if not self.set_mode_safe(4, "GUIDED"):
-            print("Passage Guided failed")
-            return
-        time.sleep(0.5)
-        
-        # 5. Envoi d'une commande de vitesse nulle (Hover) pour stabiliser
-        self.send_velocity_body(0, 0, 0, 0)
-        print("Décollage terminé ! Le drone est en stationnaire et attend les vitesses de l'IA.")
-        
-    
-
-    def arm_and_takeoff_guided2(self, target_altitude=0.5):
-        """ Envoie juste l'ordre de décollage sans attendre """
-        self.request_message_interval(173, 20) # RANGEFINDER (Lidar brut)
-        self.request_message_interval(132, 20) # DISTANCE_SENSOR (Lidar brut)
-        time.sleep(0.2) # Petit temps mort pour que le Pixhawk ouvre le canal
-        
-        self.set_ekf_origin()
-        if not self.set_mode_safe(4, "GUIDED"):
-            return False
-            
-        self.master.arducopter_arm()
-        self.master.motors_armed_wait()
-        
-        # Envoi de l'ordre
+        # 4. Commande de décollage globale
         self.master.mav.command_long_send(
             self.master.target_system, self.master.target_component,
             mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, 0,
             0, 0, 0, 0, 0, 0, target_altitude)
-        return True
-    
-
-    def arm_and_takeoff_guided(self, target_altitude=0.5):
-        """ 
-        Décollage avec la commande officielle NAV_TAKEOFF en mode GUIDED.
-        Le drone utilise son propre algorithme de décollage avec le flux optique.
-        """
-        # 1. On donne un repère à l'EKF
-        self.set_ekf_origin()
+            
+        print("Commande acceptée. Surveillance de l'altitude (Spool Up en cours)...")
         
-        # 2. Passage en mode GUIDED (Mode 4)
-        if not self.set_mode_safe(4, "GUIDED"):
-            print("Erreur : Impossible de passer en GUIDED. Annulation.")
-            return
+        # 5. BOUCLE DE MAINTIEN (Cruciale avec Pymavlink)
+        while True:
+            # On garde le script "en vie" en envoyant un Heartbeat à ArduPilot
+            self.master.mav.heartbeat_send(
+                mavutil.mavlink.MAV_TYPE_ONBOARD_CONTROLLER,
+                mavutil.mavlink.MAV_AUTOPILOT_INVALID, 0, 0, 0)
+                
+            # On lit l'altitude locale pour savoir quand on est arrivé
+            msg = self.master.recv_match(type='LOCAL_POSITION_NED', blocking=False)
+            if msg:
+                alt = -msg.z  # Inversion de l'axe Z (NED)
+                
+                # Optionnel : Afficher l'altitude en direct (décommente pour voir la montée)
+                # print(f"Montée... Altitude actuelle : {alt:.2f} m")
+                
+                # Si on a atteint 95% de l'altitude demandée, le décollage est terminé
+                if alt >= target_altitude * 0.95:
+                    print(f"Altitude cible ({target_altitude}m) atteinte ! Le drone est en vol stationnaire.")
+                    break
+            
+            # On boucle à 10Hz. Rappel : le drone va attendre ~3 secondes avant de commencer à monter.
+            time.sleep(0.1)
+        
+    def arm_and_takeoff_test(self, target_altitude=0.5):
+        """ 
+        Décollage par commande directe de poussée (Thrust) en GUIDED_NOGPS.
+        Ignore totalement la radiocommande.
+        """
+        # 1. Passage en mode GUIDED_NOGPS (Mode 20)
+        print("Passage en mode GUIDED_NOGPS...")
+        self.master.mav.set_mode_send(
+            self.master.target_system,
+            mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+            20) 
+        time.sleep(1.0)
 
-        # 3. Armement des moteurs
+        print(f"Montée vers {target_altitude}m via Thrust MAVLink...")
+        
+        while True:
+            # --- LECTURE ALTITUDE LIDAR ---
+            msg = self.master.recv_match(type='VFR_HUD', blocking=True, timeout=0.2)
+            current_alt = 0.0
+            
+            if msg:
+                current_alt = msg.alt # alt est un float directement en mètres
+            
+            print(f"Altitude EKF : {current_alt:.2f} m")
+            
+            # --- VÉRIFICATION CIBLE ---
+            if current_alt >= target_altitude:
+                print(f"Altitude de {target_altitude}m atteinte !")
+                break # On sort de la boucle de montée
+                
+            time.sleep(0.1)
+
+
+    def arm_and_takeoff_nogps(self, target_altitude=0.5):
+        """ 
+        Décollage par commande directe de poussée (Thrust) en GUIDED_NOGPS.
+        Ignore totalement la radiocommande.
+        """
+        # 1. Passage en mode GUIDED_NOGPS (Mode 20)
+        print("Passage en mode GUIDED_NOGPS...")
+        self.master.mav.set_mode_send(
+            self.master.target_system,
+            mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+            20) 
+        time.sleep(1.0)
+
+        # 2. Armement des moteurs
         print("Armement des moteurs...")
         self.master.arducopter_arm()
         self.master.motors_armed_wait()
         print("Moteurs Armés !")
 
-        # 4. COMMANDE OFFICIELLE DE DÉCOLLAGE
-        print(f"Envoi de l'ordre de décollage autonome vers {target_altitude}m...")
-        self.master.mav.command_long_send(
-            self.master.target_system, self.master.target_component,
-            mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, 0,
-            0, 0, 0, 0, 0, 0, target_altitude)
+        print(f"Montée vers {target_altitude}m via Thrust MAVLink...")
         
-        # 5. Boucle de surveillance de l'altitude
         while True:
-            # On écoute la vraie hauteur du Lidar
-            msg = self.master.recv_match(type=['RANGEFINDER', 'DISTANCE_SENSOR'], blocking=True, timeout=0.1)
+            # --- COMMANDE DE POUSSÉE ---
+            # Le thrust va de 0.0 (moteurs coupés) à 1.0 (à fond).
+            # En général, un drone flotte (Hover) autour de 0.3 ou 0.4.
+            # 0.65 garantit une montée franche. (Baisse à 0.55 s'il monte trop vite).
+            thrust_value = 0.55 
+            
+            # Message MAVLink "SET_ATTITUDE_TARGET"
+            """
+            self.master.mav.set_attitude_target_send(
+                0, # time_boot_ms (ignoré)
+                self.master.target_system, self.master.target_component,
+                0b00000111,    # Masque: Ignore les vitesses de rotation, n'écoute que l'attitude et le Thrust
+                [1, 0, 0, 0],  # Quaternion [w, x, y, z] : [1,0,0,0] = Drone maintenu parfaitement plat
+                0, 0, 0,       # Roll rate, pitch rate, yaw rate (ignorés par le masque)
+                thrust_value   # Poussée des moteurs
+            )
+            """
+
+            # --- LECTURE ALTITUDE LIDAR ---
+            msg = self.master.recv_match(type='VFR_HUD', blocking=True, timeout=0.2)
             current_alt = 0.0
             
             if msg:
-                if msg.get_type() == 'RANGEFINDER':
-                    current_alt = msg.distance
-                elif msg.get_type() == 'DISTANCE_SENSOR':
-                    current_alt = msg.current_distance / 100.0
+                current_alt = msg.alt # alt est un float directement en mètres
             
-            print(f"Altitude : {current_alt:.2f} m")
+            print(f"Altitude EKF : {current_alt:.2f} m")
             
-            # Si on atteint la cible (avec 5% de marge pour l'inertie)
-            if current_alt >= target_altitude * 0.95:
+            # --- VÉRIFICATION CIBLE ---
+            if current_alt >= target_altitude:
                 print(f"Altitude de {target_altitude}m atteinte !")
-                break 
+                break # On sort de la boucle de montée
                 
             time.sleep(0.1)
 
-        print("Décollage terminé ! Le drone est verrouillé sur place et prêt pour l'IA.")
-
-    def get_current_alt_brute(self):
-        """ 
-        Écoute le flux MAVLink et retourne l'altitude brute du Lidar en mètres.
-        Si aucun message n'est reçu, retourne une valeur par défaut (-1.0).
-        """
-        # On écoute les messages RANGEFINDER ou DISTANCE_SENSOR sans bloquer (blocking=False)
-        # pour ne pas figer la boucle principale OpenCV si le Pixhawk est lent
-        msg = self.master.recv_match(type=['RANGEFINDER', 'DISTANCE_SENSOR'], blocking=False)
-        
-        # Par défaut, on garde la dernière valeur connue ou une valeur négative si inconnu
-        # Pour faire propre, on peut stocker ça dans une variable d'instance initialisée à 0.0 dans __init__
-        if not hasattr(self, '_last_lidar_alt'):
-            self._last_lidar_alt = 0.0
-
-        if msg:
-            if msg.get_type() == 'RANGEFINDER':
-                self._last_lidar_alt = msg.distance
-            elif msg.get_type() == 'DISTANCE_SENSOR':
-                self._last_lidar_alt = msg.current_distance / 100.0 # cm vers mètres
-                
-        return self._last_lidar_alt
-
+        # 3. REPASSAGE EN MODE GUIDED
+        # Le mode GUIDED (Mode 4) va stabiliser le drone là où il est (Hover)
+        # Et il va de nouveau accepter tes commandes de vitesse (send_velocity_body) pour l'Aruco !
+        print("Repassage en mode GUIDED (Mode 4)...")
+        self.master.mav.set_mode_send(
+            self.master.target_system,
+            mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+            4) 
+        time.sleep(1.0)
+            
+        print("Décollage terminé ! Le drone est prêt pour l'IA.")
 
     def send_velocity_body(self, vx, vy, vz, yaw_rate):
         """
@@ -236,6 +209,52 @@ class DroneController:
             vx, vy, vz,  # Vitesses
             0, 0, 0,  # Accélérations ignorées
             0, yaw_rate)
+
+
+
+    def send_velocity_body_with_stop_time(self, vx, vy, vz, yaw_rate, duration: float = 0.0):
+        """
+        Envoie des vitesses au drone relatives à lui-même (avant, droite, bas).
+
+        vx       : vitesse vers l'avant (m/s)
+        vy       : vitesse vers la droite (m/s)
+        vz       : vitesse vers le bas (m/s) - Négatif pour monter !
+        yaw_rate : rotation sur lui-même (rad/s)
+        duration : durée d'envoi en secondes (0 = envoi unique)
+        """
+        if duration <= 0:
+            # Envoi unique — comportement original
+            self.master.mav.set_position_target_local_ned_send(
+                0, self.master.target_system, self.master.target_component,
+                mavutil.mavlink.MAV_FRAME_BODY_NED,
+                0b01111111000111,
+                0, 0, 0,
+                vx, vy, vz,
+                0, 0, 0,
+                0, yaw_rate)
+        else:
+            # Envoi pendant duration secondes
+            start = time.time()
+            while time.time() - start < duration:
+                self.master.mav.set_position_target_local_ned_send(
+                    0, self.master.target_system, self.master.target_component,
+                    mavutil.mavlink.MAV_FRAME_BODY_NED,
+                    0b01111111000111,
+                    0, 0, 0,
+                    vx, vy, vz,
+                    0, 0, 0,
+                    0, yaw_rate)
+                time.sleep(0.05)  # 20Hz
+
+            # Stop automatique à la fin
+            self.master.mav.set_position_target_local_ned_send(
+                0, self.master.target_system, self.master.target_component,
+                mavutil.mavlink.MAV_FRAME_BODY_NED,
+                0b01111111000111,
+                0, 0, 0,
+                0, 0, 0,
+                0, 0, 0,
+                0, 0)
     
     def land(self):
         print("Atterrissage commandé !")
@@ -243,7 +262,50 @@ class DroneController:
             self.master.target_system, self.master.target_component,
             mavutil.mavlink.MAV_CMD_NAV_LAND, 0,
             0, 0, 0, 0, 0, 0, 0)
-        
+
+    def rotate_drone(self, angle_deg: float,
+                     yaw_rate_deg_s: float = 30.0) -> None:
+        """
+        Fait tourner le drone sur lui-même d'un angle donné.
+
+        master        : connexion pymavlink
+        angle_deg     : angle de rotation en degrés
+                        positif = sens horaire
+                        négatif = sens antihoraire
+        yaw_rate_deg_s: vitesse de rotation en degrés/seconde (défaut 30°/s)
+        """
+        # Récupérer le yaw actuel depuis le Pixhawk
+        msg = self.master.recv_match(type='ATTITUDE', blocking=True, timeout=2)
+        if msg is None:
+            print("Impossible de lire l'attitude du drone")
+            return
+
+        current_yaw_deg = math.degrees(msg.yaw)  # yaw actuel en degrés
+        target_yaw_deg = current_yaw_deg + angle_deg
+
+        # Normaliser entre -180 et 180
+        target_yaw_deg = (target_yaw_deg + 180) % 360 - 180
+        target_yaw_rad = math.radians(target_yaw_deg)
+
+        # Durée estimée de la rotation
+        duration = abs(angle_deg) / yaw_rate_deg_s
+
+        # Envoyer la commande de yaw
+        self.master.mav.set_position_target_local_ned_send(
+            0,
+            self.master.target_system,
+            self.master.target_component,
+            mavutil.mavlink.MAV_FRAME_LOCAL_NED,
+            0b0000010111111111,  # uniquement yaw actif
+            0, 0, 0,
+            0, 0, 0,
+            0, 0, 0,
+            target_yaw_rad,  # yaw cible en radians
+            0  # yaw_rate
+        )
+
+        # Attendre la fin de la rotation
+        time.sleep(duration + 0.5)  # +0.5s marge
 
 
 # Mode sans pixhawk
@@ -265,7 +327,7 @@ class DummyDroneController:
         print("[MOCK] Faux Pixhawk initialisé (Mode Vision-Only)")
         self.master = DummyMaster()
 
-    def arm_and_takeoff_hybrid(self, target_altitude):
+    def arm_and_takeoff(self, target_altitude):
         print(f"[MOCK] Décollage virtuel à {target_altitude}m")
 
     def send_velocity_body(self, vx, vy, vz, yaw_rate):
