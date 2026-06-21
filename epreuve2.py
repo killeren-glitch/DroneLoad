@@ -6,20 +6,36 @@ import mavlink
 import head as h
 import sensors as s
 
+cap = fa.camera_init()
+detector, aruco_dict = fa.aruco_init()
+mavlink_command = mavlink.DroneController()
+sensors = s.HardwareManager()
 
-def run_epreuve2():
+def attendre_manoeuvre_manuelle_en_cour():
+    pass
 
-    """
-    ---------- PHASE 1 : PASS THROUGH THE FIRST WINDOW ---------
-                            WINDOW B
-    """
-    cap = fa.camera_init()
-    detector, aruco_dict = fa.aruco_init()
-    mavlink_command = mavlink.DroneController()
-    sensors = s.HardwareManager()
+def passer_a_travers():
+    found = f.search_window_with_height(cap, detector, mavlink_command, sensors)
+
+    # Traversée
+    if found:
+        went_through = f.go_through_window(cap, detector, mavlink_command)
+        if not went_through:
+            print("Échec traversée fenêtre B, Passage en mode manuel")
+            attendre_manoeuvre_manuelle_en_cour()
+    else:
+        print("Fenêtre introuvable passage en mode manuel")
+        attendre_manoeuvre_manuelle_en_cour()
 
 
-    # Décollage à 1m et attendre d'arriver
+
+def avancer_pendant(temps):
+    yaw = 0
+    vx = 0.1
+    mavlink_command.send_velocity_body(vx, 0.0, 0.0, yaw)
+    time.sleep(temps)  # ← laisser le temps à la boucle de tourner
+
+def decollage():
     vx = 0
     vy = 0
     vz = -0.1
@@ -27,43 +43,120 @@ def run_epreuve2():
     while True:
         mavlink_command.send_velocity_body(vx, vy, vz, yaw)
         altitude = sensors.get_altitude()
-        if altitude >= 1:break
-        else: time.sleep(0.05)
+        if altitude >= 1:
+            break
+        else:
+            time.sleep(0.05)
 
     # Stabilisation 5 secondes
     f.keep_position(5, mavlink_command)
 
-    # Avancer vers la fenêtre en vérifiant le capteur en continu (on s'arréte a 1 m de l'obstacle detecté)
-    while True:
-        distance = sensors.get_forward_distance()
-        if distance is None:
-            time.sleep(0.05)
-            continue
 
-        distance_m = distance / 1000.0
+def atterissage():
+    mavlink_command.land()
 
-        if distance_m <= 1.0:
-            # Trop proche d'un obstacle → stop
-            mavlink_command.send_velocity_body(0, 0, 0, yaw)
-            break
+def demi_tour() -> None:
+    mavlink_command.rotate_drone(180)
 
-        # Avancer
-        yaw = 0
-        vx = 0.1
-        mavlink_command.send_velocity_body(vx, 0.0, 0.0, yaw)
-        time.sleep(0.05)  # ← laisser le temps à la boucle de tourner
 
+
+
+
+def run_epreuve2():
+    """
+    ---------- PHASE 1 : PASS THROUGH THE FIRST WINDOW ---------
+                            WINDOW B
+    """
+    # Décollage à 1m et attendre d'arriver
+    decollage()
+
+    #passage auto a manuel
+    #le drone est dirigé manuellement vers la fenetre
+    attendre_manoeuvre_manuelle_en_cour()
+
+    #on repasse en automatique et on essaye de traverssé la fenetre.
     # Recherche fenêtre B
-    found = f.search_window_with_height(cap, detector, mavlink_command, sensors)
+    passer_a_travers()
+    #Si on arrive la ca veut dire que le drone est passé a travers la fenetre
+    #et du coup ce qu'on fait c'est d'avancé un pe ensuite on s'arréte
 
+
+
+    """
+    ---------- PHASE 2 : PASS THROUGH THE SECOND WINDOW ---------
+                            WINDOW C
+    """
+    # Avancer
+    avancer_pendant(0.05)#seconde
+
+    #passage auto a manuel
+    #le drone est dirigé manuellement vers la fenetre C
+    attendre_manoeuvre_manuelle_en_cour()
+
+    #on repasse en automatique et on essaye de traverssé la fenetre.
     # Traversée
-    if found:
-        went_through = f.go_through_window(cap, detector,mavlink_command)
-        if not went_through:
-            print("Échec traversée fenêtre B")
-            mavlink_command.land()
-    else:
-        print("Fenêtre B introuvable → atterrissage")
-        mavlink_command.land()
+    passer_a_travers()
+
+    #on a traversé la fenetre C
+    # Avancer vers la zone E
+    avancer_pendant(0.05)
+
+    # Stabilisation 5 secondes
+    f.keep_position(5, mavlink_command)
+
+    #On fait demi tour
+    demi_tour()
+
+    """
+        ---------- PHASE 3 : PASS THROUGH THE SECOND WINDOW ---------
+                                WINDOW C-retour vers la zone de départ: zone A
+        """
+    # Avancer
+    avancer_pendant(0.05)  # seconde
+
+    # passage auto a manuel
+    # le drone est dirigé manuellement vers la fenetre C
+    attendre_manoeuvre_manuelle_en_cour()
+
+    # on repasse en automatique et on essaye de traverssé la fenetre.
+    # Traversée
+    passer_a_travers()
+
+
+    """
+    ---------- PHASE 4 : PASS THROUGH THE FIRST WINDOW ---------
+                            WINDOW B-retour vers la zone de départ: zone A
+    """
+
+    # on a traversé la fenetre C
+    # Avancer vers la zone E
+    avancer_pendant(0.05)
+
+    #passage auto a manuel
+    #le drone est dirigé manuellement vers la fenetre
+    attendre_manoeuvre_manuelle_en_cour()
+
+    #on repasse en automatique et on essaye de traverssé la fenetre.
+    # Recherche fenêtre B
+    passer_a_travers()
+    #Si on arrive la ca veut dire que le drone est passé a travers la fenetre
+    #et du coup ce qu'on fait c'est d'avancé un pe ensuite on s'arréte
+
+    # on a traversé la fenetre C
+    # Avancer vers la zone E
+    avancer_pendant(0.05)
+
+    #On fait demi tour
+    demi_tour()
+
+    # attérisage sur la zone A
+    atterissage()
+
+
+
+
+
+
+
 
 
