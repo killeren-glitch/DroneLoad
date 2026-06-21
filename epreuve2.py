@@ -3,13 +3,15 @@ import capteurs as capt
 import time
 import epreuve2_function as f
 import mavlink
-import head as h
 import sensors as s
+import gstream
 
-cap = fa.camera_init()
+#cap = fa.camera_init()
 detector, aruco_dict = fa.aruco_init()
 mavlink_command = mavlink.DroneController()
 sensors = s.HardwareManager()
+video = gstream.VideoManager()
+cap = video
 
 def attendre_manoeuvre_manuelle_en_cour():
     pass

@@ -18,11 +18,14 @@ def win_center_coordinates(cap: cv2.VideoCapture, detector: aruco.ArucoDetector)
     def put_text(frame: np.ndarray, text: str, org: tuple) -> None:
         cv2.putText(frame, text, org, cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
 
-    ret, frame = cap.read()
-    if not ret:
+    #ret, frame = cap.read()
+    frame = cap.get_frame()
+
+    if not frame:
         print("Erreur : impossible de lire la frame.")
         return None
 
+    frame = cap.get_frame()
     frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     corners, ids, _ = detector.detectMarkers(frame_gray)
 
