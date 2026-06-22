@@ -4,6 +4,9 @@ import time
 import numpy as np
 #import vl53l5cx_ctypes as vl53l5cx
 #from vl53l5cx_ctypes import STATUS_RANGE_VALID, STATUS_RANGE_VALID_LARGE_PULSE, RANGING_MODE_CONTINUOUS
+from gpiozero import AngularServo 
+import gpiozero.pins.lgpio
+import lgpio
 
 class VL53L5CXReader:
     """
@@ -20,12 +23,112 @@ class VL53L5CXReader:
         print("Done!")
         self._sensor.set_resolution(8 * 8)
    
-   ####
+        ####
         self._sensor.set_ranging_frequency_hz(15) # 15 Hz
         self._sensor.set_ranging_mode(RANGING_MODE_CONTINUOUS)
-####
+        ####
         self._sensor.start_ranging()
+        def __patched_init(self, chip=None):
+            gpiozero.pins.lgpio.LGPIOFactory.__bases__[0].__init__(self)
+            chip = 0
+            self._handle = lgpio.gpiochip_open(chip)
+            self._chip = chip
+            self.pin_class = gpiozero.pins.lgpio.LGPIOPin
 
+        gpiozero.pins.lgpio.LGPIOFactory.__init__ = __patched_init
+
+        pin_servo1=17
+        pin_servo2=27
+
+        myCorrection=0.45
+        max_ang = 180.0
+        min_ang = 0.0
+        maxPW=(2.0+myCorrection)/1000
+        minPW=(1.0-myCorrection)/1000
+
+        servo1 = AngularServo(pin_servo1,min_angle=min_ang, max_angle=max_ang, min_pulse_width=minPW,max_pulse_width=maxPW)
+        servo2 = AngularServo(pin_servo2,min_angle=min_ang, max_angle=max_ang, min_pulse_width=minPW,max_pulse_width=maxPW)*
+    
+    def servo_1_up(self):
+        global t_servo1 
+        global etat_servo1
+        global now_servo
+        now_servo = time.time()
+
+        if t_servo1 == 0:
+            t_servo1 = time.time()
+        if now_servo <= t_servo1 + 0.2:
+            if etat_servo1 == "down":
+                self.servo1.angle=10.0  
+        else : 
+            self.servo1.angle = None
+            etat_servo1 = "up"
+            t_servo1 = 0
+
+    def servo_1_down(self):
+        global t_servo1 
+        global etat_servo1
+        global now_servo1
+        now_servo1 = time.time()
+
+        if t_servo1 == 0:
+            t_servo1 = time.time()
+        if now_servo1 <= t_servo1 + 0.2:
+            if etat_servo1 == "up":
+                print("going2")
+                self.servo1.angle=99.5  
+        else : 
+            print("check2")
+            self.servo1.angle = None
+            etat_servo1 = "down"
+            t_servo1 = 0
+
+    def servo_2_up(self):
+        global t_servo2 
+        global etat_servo2
+        global now_servo2
+        now_servo2 = time.time()
+
+        if t_servo2 == 0:
+            t_servo2 = time.time()
+        if now_servo2 <= t_servo2 + 0.2:
+            if etat_servo2 == "down":
+                self.servo2.angle=0.0 
+        else : 
+            self.servo2.angle = None
+            etat_servo2 = "up"
+            t_servo2 = 0
+
+    def servo_2_down(self):
+        global t_servo2 
+        global etat_servo2
+        global now_servo2
+        now_servo2 = time.time()
+
+        if t_servo2 == 0:
+            t_servo2 = time.time()
+        if now_servo2 <= t_servo2 + 0.2:
+            if etat_servo2 == "down":
+                self.servo2.angle=90.0 
+        else : 
+            self.servo2.angle = None
+            etat_servo2 = "up"
+            t_servo2 = 0
+
+    def set_camera_pitch(self, angle):
+        """ Angle: 90 (Avant) à 0 (Sol) """
+        print(f"Caméra pivotée à {angle}°")
+        if angle == "up":
+            self.servo_1_down()
+        else:
+            self.servo_1_up()
+
+    def set_hook(self, open_state):
+        print(f"Crochet ouvert : {open_state}")
+        if open_state == "open":
+            self.servo_2_up()
+        if open_state == "close":
+            self.servo_2_down()
 
     def get_distance(self) -> float | None:
         """
