@@ -2,8 +2,8 @@
 # Utilise gpiozero ou RPi.GPIO pour les servos, et la lib pimoroni pour le ToF
 import time
 import numpy as np
-import vl53l5cx_ctypes as vl53l5cx
-from vl53l5cx_ctypes import STATUS_RANGE_VALID, STATUS_RANGE_VALID_LARGE_PULSE, RANGING_MODE_CONTINUOUS
+#import vl53l5cx_ctypes as vl53l5cx
+#from vl53l5cx_ctypes import STATUS_RANGE_VALID, STATUS_RANGE_VALID_LARGE_PULSE, RANGING_MODE_CONTINUOUS
 
 class VL53L5CXReader:
     """

@@ -3,7 +3,7 @@ import numpy as np
 import argparse
 
 from mavlink import DroneController, DummyDroneController
-from gstream import VideoManager
+from gstream import VideoManager, SimVideoManager
 from sensors import HardwareManager
 # from epreuve1 import run_epreuve1
 from epreuve1 import Epreuve1Task
@@ -29,7 +29,7 @@ def main():
         drone = DummyDroneController()
     elif args.sim:
         print("--- DÉMARRAGE EN MODE SIMULATION (SITL) ---")
-        drone = DroneController(connection_string="udp:127.0.0.1:14550")
+        drone = DroneController(connection_string="udpin:0.0.0.0:14551")
     else:
         print("--- DÉMARRAGE EN MODE RASPBERRY PI RÉEL ---")
         drone = DroneController(connection_string="/dev/ttyAMA0")
@@ -42,7 +42,11 @@ def main():
     mqtt.start(broker_ip="127.0.0.1")
 
    # drone = DroneController(connection_string=mavlink_port)
-    video = VideoManager(ip_dest="192.168.31.139", width=640, height=480)
+    if args.sim:
+        video = SimVideoManager(ip_dest="192.168.31.139", width=640, height=480)
+    else:
+        video = VideoManager(ip_dest="192.168.31.139", width=640, height=480)
+    
 
     # 2. Initialisation Vision
     aruco_vision = ArucoProcessor()
