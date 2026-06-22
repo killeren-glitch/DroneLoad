@@ -210,8 +210,6 @@ class DroneController:
             0, 0, 0,  # Accélérations ignorées
             0, yaw_rate)
 
-
-
     def send_velocity_body_with_stop_time(self, vx, vy, vz, yaw_rate, duration: float = 0.0):
         """
         Envoie des vitesses au drone relatives à lui-même (avant, droite, bas).
@@ -255,7 +253,12 @@ class DroneController:
                 0, 0, 0,
                 0, 0, 0,
                 0, 0)
-    
+
+    def keep_position(self, wait_time, yaw):
+        for i in range(wait_time):
+            self.send_velocity_body(0, 0, 0, yaw)
+            time.sleep(1)
+
     def land(self):
         print("Atterrissage commandé !")
         self.master.mav.command_long_send(

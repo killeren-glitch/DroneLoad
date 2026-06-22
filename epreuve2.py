@@ -17,17 +17,11 @@ def attendre_manoeuvre_manuelle_en_cour():
     pass
 
 def passer_a_travers():
-    found = f.search_window_with_height(cap, detector, mavlink_command, sensors)
 
-    # Traversée
-    if found:
-        went_through = f.go_through_window(cap, detector, mavlink_command)
-        if not went_through:
-            print("Échec traversée fenêtre B, Passage en mode manuel")
-            attendre_manoeuvre_manuelle_en_cour()
-    else:
-        print("Fenêtre introuvable passage en mode manuel")
-        attendre_manoeuvre_manuelle_en_cour()
+    went_through = f.go_through_window(cap, detector, mavlink_command)
+    if not went_through:
+        print("Échec traversée fenêtre B, Passage en mode manuel")
+
 
 
 
@@ -51,7 +45,7 @@ def decollage():
             time.sleep(0.05)
 
     # Stabilisation 5 secondes
-    f.keep_position(5, mavlink_command)
+    mavlink_command.keep_position(5, yaw)
 
 
 def atterissage():
