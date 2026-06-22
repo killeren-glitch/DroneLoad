@@ -1,43 +1,216 @@
-"""
+import init_function as fa
+import capteurs as capt
+import time
+import epreuve1_function as f
+import mavlink
+import sensors as s
+import gstream
+
+# cap = fa.camera_init()
+detector, aruco_dict = fa.aruco_init()
+mavlink_command = mavlink.DroneController()
+sensors = s.HardwareManager()
+video = gstream.VideoManager()
+cap = video
+
+
+def attendre_manoeuvre_manuelle_en_cour():
+    pass
+
+
+def reconnaitre_zone_livraison(zone_annoncee: str):
+    """
+    Reconnaît la zone de livraison correspondant à celle annoncée par l'arbitre.
+
+    zone_annoncee : numéro/nom de la zone annoncée (ex: "1", "2", "3", "4")
+
+    Retourne True si la zone reconnue correspond, False sinon.
+    """
+    zone_detectee, confiance = f.classify_delivery_zone(cap)
+
+    if zone_detectee is None:
+        print("Aucune zone reconnue — passage en mode manuel")
+        return False
+
+    if zone_detectee != zone_annoncee:
+        print(f"Zone détectée ({zone_detectee}) ≠ zone annoncée ({zone_annoncee})")
+        return False
+
+    print(f"Zone {zone_detectee} confirmée (confiance: {confiance:.2f})")
+    return True
+
+
+def deposer_objet():
+    """
+    Dépose l'objet sur la zone actuellement survolée.
+    """
+    deposed = f.drop_object(mavlink_command)
+    if not deposed:
+        print("Échec dépôt objet, passage en mode manuel")
+    return deposed
+
+
+def recuperer_objet():
+    """
+    Récupère un objet dans l'aire de stockage (zone B).
+    """
+    recovered = f.pick_up_object(cap, detector, mavlink_command)
+    if not recovered:
+        print("Échec récupération objet, passage en mode manuel")
+    return recovered
+
+
+def aligner_robot_sur_aruco(aruco_id: int):
+    """
+    Guide le robot via UART pour l'aligner devant l'ArUco demandé.
+
+    aruco_id : ID de l'ArUco cible (2 ou 3)
+
+    Retourne True si le robot confirme l'alignement (OUI reçu), False sinon.
+    """
+    aligned = f.guide_robot_to_aruco(cap, detector, mavlink_command, aruco_id)
+    if not aligned:
+        print(f"Échec alignement robot sur ArUco {aruco_id}, passage en mode manuel")
+    return aligned
+
+
+def lire_zone_depuis_robot():
+    """
+    Lit la zone de dépôt transmise par le robot via UART.
+
+    Retourne le numéro de zone (str) ou None en cas d'échec.
+    """
+    zone = f.read_zone_from_robot(mavlink_command)
+    if zone is None:
+        print("Aucune zone reçue du robot, passage en mode manuel")
+    return zone
+
+
+def avancer_pendant(temps):
+    yaw = 0
+    vx = 0.1
+    mavlink_command.send_velocity_body(vx, 0.0, 0.0, yaw)
+    time.sleep(temps)
+
+
+def decollage():
+    vx = 0
+    vy = 0
+    vz = -0.1
+    yaw = 0
+    while True:
+        mavlink_command.send_velocity_body(vx, vy, vz, yaw)
+        altitude = sensors.get_altitude()
+        if altitude >= 1:
+            break
+        else:
+            time.sleep(0.05)
+
+    # Stabilisation 5 secondes
+    mavlink_command.keep_position(5, yaw)
+
+
+def atterissage():
+    mavlink_command.land()
+
+
+def demi_tour() -> None:
+    mavlink_command.rotate_drone(180)
+
 def run_epreuve1(drone, hw, arucos_data, frame_width):
 
-#S'exécute à chaque tour de boucle (tick).
-#aruco_data : dictionnaire {id_aruco: (x, y)}
+        """
+        ---------- PHASE 1 : DÉCOLLAGE + DÉPÔT INITIAL ---------
+                        Zone A -> Zone de livraison annoncée
+        """
+        # Décollage avec objet attaché
+        decollage()
 
-    TARGET_ID = 0
-    DISTANCE_MIN = 0.8  # S'arrêter à 80 cm du mur/fenêtre
+        # passage auto à manuel
+        # l'opérateur positionne le drone face à la zone annoncée par l'arbitre
+        attendre_manoeuvre_manuelle_en_cour()
 
-    distance_avant = hw.get_forward_distance()
+        # on repasse en automatique : reconnaissance + dépose
+        zone_annoncee = f.get_announced_zone()  # récupérée via interface arbitre/UI
 
-    if TARGET_ID in arucos_data:
-        # L'ArUco est vu !
-        center_x, center_y = arucos_data[TARGET_ID]
+        if reconnaitre_zone_livraison(zone_annoncee):
+            deposer_objet()
+        else:
+            attendre_manoeuvre_manuelle_en_cour()
+            deposer_objet()
 
-        # Calcul de l'erreur par rapport au centre de l'image
-        erreur_x = center_x - (frame_width / 2)
+        """
+        ---------- PHASE 2 : RETOUR STOCKAGE + RÉCUPÉRATION OBJET ---------
+                        Zone de livraison -> Zone B (stockage)
+        """
+        avancer_pendant(0.05)
 
-        # --- Contrôleur Proportionnel simple ---
+        # passage auto à manuel vers la zone B
+        attendre_manoeuvre_manuelle_en_cour()
 
-        # Rotation (Yaw) : On tourne vers le tag
-        k_yaw = 0.002
-        yaw_rate = erreur_x * k_yaw
+        # on repasse en automatique
+        recuperer_objet()
 
-        # Avancement (Vx) : On avance si le tag est à peu près centré
-        vx = 0.0
-        if abs(erreur_x) < 50:  # Le tag est au centre (+/- 50 pixels)
-            if distance_avant > DISTANCE_MIN:
-                vx = 0.3  # Avancer à 0.3 m/s
-            else:
-                vx = 0.0  # Stop, on est devant la fenêtre !
+        """
+        ---------- PHASE 3 : COOPÉRATION AVEC LE ROBOT PULL-E ---------
+                        Guidage robot via ArUcos 2 et 3
+        """
+        avancer_pendant(0.05)
 
-        # Envoi de la commande au Pixhawk
-        # vx (avant), vy (droite = 0), vz (bas = 0), yaw_rate
-        drone.send_velocity_body(vx, 0, 0, yaw_rate)
+        # passage auto à manuel : positionner le drone au-dessus du robot (ArUco 1)
+        attendre_manoeuvre_manuelle_en_cour()
 
-    else:
-        # L'Aruco est perdu : on s'arrête de bouger en XY, maintien altitude
-        drone.send_velocity_body(0, 0, 0, 0)
-"""
+        # on repasse en automatique : alignement sur le premier ArUco
+        if aligner_robot_sur_aruco(2):
+            pass
+        else:
+            attendre_manoeuvre_manuelle_en_cour()
+            aligner_robot_sur_aruco(2)
+
+        # alignement sur le second ArUco
+        if aligner_robot_sur_aruco(3):
+            pass
+        else:
+            attendre_manoeuvre_manuelle_en_cour()
+            aligner_robot_sur_aruco(3)
+
+        # lecture de la zone transmise par le robot
+        zone_robot = lire_zone_depuis_robot()
+        if zone_robot is None:
+            attendre_manoeuvre_manuelle_en_cour()
+            zone_robot = lire_zone_depuis_robot()
+
+        """
+        ---------- PHASE 4 : DÉPÔT FINAL SUR ZONE INDIQUÉE PAR LE ROBOT ---------
+        """
+        avancer_pendant(0.05)
+
+        # passage auto à manuel vers la zone indiquée par le robot
+        attendre_manoeuvre_manuelle_en_cour()
+
+        # on repasse en automatique : reconnaissance + dépose finale
+        if reconnaitre_zone_livraison(zone_robot):
+            deposer_objet()
+        else:
+            attendre_manoeuvre_manuelle_en_cour()
+            deposer_objet()
+
+        """
+        ---------- PHASE 5 : RETOUR ET ATTERRISSAGE ---------
+                        Retour vers la zone A
+        """
+        avancer_pendant(0.05)
+
+        demi_tour()
+
+        avancer_pendant(0.05)
+
+        # passage auto à manuel pour le retour précis sur ArUco 0
+        attendre_manoeuvre_manuelle_en_cour()
+
+        # atterrissage sur la zone A
+        atterissage()
+
 
 class Epreuve1Task:
     def __init__(self):
