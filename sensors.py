@@ -53,7 +53,7 @@ class VL53L5CXReader:
         etat_servo1="up"
         etat_servo2="down"
         
-    def servo_1_up():
+    def servo_1_up(self):
         global t_servo1 
         global etat_servo1
         global now_servo
@@ -63,13 +63,13 @@ class VL53L5CXReader:
             t_servo1 = time.time()
         if now_servo <= t_servo1 + 0.2:
             if etat_servo1 == "down":
-                servo1.angle=10.0  
+                self.servo1.angle=10.0  
         else : 
-            servo1.angle = None
+            self.servo1.angle = None
             etat_servo1 = "up"
             t_servo1 = 0
 
-    def servo_1_down():
+    def servo_1_down(self):
         global t_servo1 
         global etat_servo1
         global now_servo1
@@ -79,15 +79,13 @@ class VL53L5CXReader:
             t_servo1 = time.time()
         if now_servo1 <= t_servo1 + 0.2:
             if etat_servo1 == "up":
-                print("going2")
-                servo1.angle=99.5  
+                self.servo1.angle=99.5  
         else : 
-            print("check2")
-            servo1.angle = None
+            self.servo1.angle = None
             etat_servo1 = "down"
             t_servo1 = 0
     
-    def servo_2_up():
+    def servo_2_up(self):
         global t_servo2 
         global etat_servo2
         global now_servo2
@@ -97,13 +95,13 @@ class VL53L5CXReader:
             t_servo2 = time.time()
         if now_servo2 <= t_servo2 + 0.2:
             if etat_servo2 == "down":
-                servo2.angle=0.0 
+                self.servo2.angle=0.0 
         else : 
-            servo2.angle = None
+            self.servo2.angle = None
             etat_servo2 = "up"
             t_servo2 = 0
     
-    def servo_2_down():
+    def servo_2_down(self):
         global t_servo2 
         global etat_servo2
         global now_servo2
@@ -113,9 +111,9 @@ class VL53L5CXReader:
             t_servo2 = time.time()
         if now_servo2 <= t_servo2 + 0.2:
             if etat_servo2 == "down":
-                servo2.angle=90.0 
+                self.servo2.angle=90.0 
         else : 
-            servo2.angle = None
+            self.servo2.angle = None
             etat_servo2 = "up"
             t_servo2 = 0
 
@@ -156,13 +154,13 @@ class HardwareManager:
         """
         #print(f"Caméra pivotée à {cam_state}°")
         if cam_state == "1":
-            servo_1_down()
+            servo_1_down(self)
         else:
-            servo_1_up()
+            servo_1_up(self)
     
     def set_hook(self, open_state):
         #print(f"Crochet ouvert : {open_state}")
         if open_state == "1":
-            servo_2_up()
+            self.servo_2_up()
         if open_state == "0":
-            servo_2_down()
+            self.servo_2_down()
